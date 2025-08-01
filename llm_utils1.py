@@ -5,36 +5,36 @@ from langchain_community.document_loaders import Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
+from langchain import hub
 from langchain_upstage import ChatUpstage
 from langchain_core.messages import HumanMessage
+from langchain.chains import RetrievalQA
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains import create_history_aware_retriever, create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains import create_history_aware_retriever
+from langchain_core.prompts import MessagesPlaceholder
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
 load_dotenv()
 
-store = {}
-
-
-def get_session_history(session_id: str) -> BaseChatMessageHistory:
-    if session_id not in store:
-        store[session_id] = ChatMessageHistory()
-    return store[session_id]
-
-def get_llm():
+def get_llm(model='solar-pro2'):
     upstage_api_key = os.environ.get("UPSTAGE_API_KEY")
     llm = ChatUpstage(
         api_key=upstage_api_key,
         model="solar-pro2"
     )
+    
     return llm
 
-def get_dictionary_chain():
-    llm = get_llm()
+def get_dictionary_chain(llm):
+    prompt = get_prompt
+    chain = prompt | llm | StrOutputParser()
+
+    return chain
+
+def get_prompt():
     dictionary = ["사람을 나타내는 표현 -> 거주자"]
     prompt = ChatPromptTemplate.from_template(f"""
         사용자의 질문을 보고, 우리의 사전을 참고해서 사용자의 질문을 변경해주세요.
@@ -44,9 +44,8 @@ def get_dictionary_chain():
 
         질문: {{question}}
     """)
-    dictionary_chain = prompt | llm | StrOutputParser()
-
-    return dictionary_chain
+    
+    return prompt
 
 def get_retriever():
     upstage_api_key = os.environ.get("UPSTAGE_API_KEY")
@@ -55,15 +54,18 @@ def get_retriever():
         model="embedding-query"
     )
     index_name = 'tax-table-index'
-    database = PineconeVectorStore.from_existing_index(embedding=embedding, index_name=index_name)
-    retriever = database.as_retriever(search_kwargs={'k': 2})
+    #파인콘 벡터DB설정
+    pinecone_api_key = os.environ.get("PINECONE_API_KEY")
 
+    pc = Pinecone(api_key=pinecone_api_key)
+    database = PineconeVectorStore.from_existing_index(index_name=index_name, embedding=embedding)
+    retriever = database.as_retriever(search_kwargs={'k': 2})
     return retriever
 
-def get_rag_chain():
+def get_qa_chain():
     llm = get_llm()
     retriever = get_retriever()
-    
+    prompt = get_prompt()
     contextualize_q_system_prompt = (
         "Given a chat history and the latest user question "
         "which might reference context in the chat history, "
@@ -79,11 +81,9 @@ def get_rag_chain():
             ("human", "{input}"),
         ]
     )
-
     history_aware_retriever = create_history_aware_retriever(
         llm, retriever, contextualize_q_prompt
     )
-
     system_prompt = (
         "You are an assistant for question-answering tasks. "
         "Use the following pieces of retrieved context to answer "
@@ -103,6 +103,7 @@ def get_rag_chain():
     question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
 
     rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+        
     conversational_rag_chain = RunnableWithMessageHistory(
         rag_chain,
         get_session_history,
@@ -110,20 +111,14 @@ def get_rag_chain():
         history_messages_key="chat_history",
         output_messages_key="answer",
     )
-
     return conversational_rag_chain
 
-def get_ai_response(user_message):
-    dictionary_chain = get_dictionary_chain()
-    rag_chain = get_rag_chain()
-    tax_chain = {"input": dictionary_chain} | rag_chain
-    ai_message = tax_chain.stream(
-        {
-            "question": user_message
-        },
-        config={
-            "configurable": {"session_id": "abc123"}
-        },
-    )
-
-    return ai_message
+def get_ai_message(query):
+    prompt = get_prompt()
+    llm = get_llm('solar-pro2')
+    retriever = get_retriever()
+    qa_chain = get_qa_chain()
+    chain = get_dictionary_chain(llm)
+    tax_chain = {"input": chain} | qa_chain
+    ai_response = tax_chain.invoke({"question": query})
+    return ai_response['answer']

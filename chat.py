@@ -1,6 +1,6 @@
 import os
 import streamlit as st
-from llm_utils import get_ai_message
+from llm_utils import get_ai_response
 
 st.set_page_config(page_title="소득세 챗봇", page_icon="🤖")
 
@@ -20,8 +20,19 @@ if user_question := st.chat_input(placeholder="소득세에 관련된 궁금한 
     st.session_state.message_list.append({"role": "user", "content": user_question})
     
     with st.spinner("답변을 생성하는 중입니다"):
-        ai_answer = get_ai_message(user_question)
+        ai_generator = get_ai_response(user_question)
+
+        with st.chat_message("ai"):
+            full_answer = ""
+            placeholder = st.empty()
+
+            for chunk in ai_generator:
+                if "answer" in chunk:
+                    full_answer += chunk["answer"]
+                    placeholder.markdown(full_answer)  # 매번 갱신만
+
+            st.session_state.message_list.append({
+                "role": "ai",
+                "content": full_answer
+            })
     
-    with st.chat_message("ai"):
-        st.write(ai_answer)
-    st.session_state.message_list.append({"role": "ai", "content": ai_answer})
